@@ -15,4 +15,4 @@ orient = "NED"
 # Select whether to use gyroscopic precession of the rotors in the quadcopter dynamics
 # ---------------------------
 # Set to False if rotor inertia isn't known (gyro precession has negigeable effect on drone dynamics)
-usePrecession = bool(False)
+usePrecession = True

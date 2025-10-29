@@ -89,7 +89,7 @@ def makeFigures(params, time, pos_all, vel_all, quat_all, omega_all, euler_all, 
     thetaDes = np.zeros(q0Des.shape[0])
     phiDes   = np.zeros(q0Des.shape[0])
     for ii in range(q0Des.shape[0]):
-        YPR = utils.quatToYPR_ZYX(sDes_calc[ii,9:13])
+        YPR = utils.quat2EulerZYX(sDes_calc[ii,9:13])
         psiDes[ii]   = YPR[0]*rad2deg
         thetaDes[ii] = YPR[1]*rad2deg
         phiDes[ii]   = YPR[2]*rad2deg

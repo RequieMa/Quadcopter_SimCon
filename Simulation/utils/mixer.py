@@ -7,13 +7,10 @@ Please feel free to use and modify this, but keep the above information. Thanks!
 """
 
 import numpy as np
-import config
-
 
 def mixerFM(quad, thr, moment):
-    t = np.array([thr, moment[0], moment[1], moment[2]])
-    w_cmd = np.sqrt(np.clip(np.dot(quad.params["mixerFMinv"], t), quad.params["minWmotor"]**2, quad.params["maxWmotor"]**2))
-
+    t = np.array([thr, *moment])
+    w_cmd = np.sqrt(np.clip(quad.params["mixerFMinv"] @ t, quad.params["rotor_omega_min"]**2, quad.params["rotor_omega_max"]**2))
     return w_cmd
 
 

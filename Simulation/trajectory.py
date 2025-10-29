@@ -11,94 +11,59 @@ Please feel free to use and modify this, but keep the above information. Thanks!
 # email: hbd730@gmail.com
 # license: BSD
 # Please feel free to use and modify this, but keep the above information. Thanks!
-
-
-
 import numpy as np
-from numpy import pi
-from numpy.linalg import norm
 from waypoints import makeWaypoints
-import config
 
 class Trajectory:
-
-    def __init__(self, quad, ctrlType, trajSelect):
-
-        self.ctrlType = ctrlType
-        self.xyzType = trajSelect[0]
-        self.yawType = trajSelect[1]
-        self.averVel = trajSelect[2]
-
-        t_wps, wps, y_wps, v_wp = makeWaypoints()
-        self.t_wps = t_wps
-        self.wps   = wps
-        self.y_wps = y_wps
-        self.v_wp  = v_wp
+    def __init__(self, quad, trajSelect):
+        self.quad = quad
+        self.xyzType = trajSelect
+        self.t_wps, self.wps, self.y_wps, self.v_wp = makeWaypoints()
 
         self.end_reached = 0
-
-        if (self.ctrlType == "xyz_pos"):
-            self.T_segment = np.diff(self.t_wps)
-
-            if (self.averVel == 1):
-                distance_segment = self.wps[1:] - self.wps[:-1]
-                self.T_segment = np.sqrt(distance_segment[:,0]**2 + distance_segment[:,1]**2 + distance_segment[:,2]**2)/self.v_wp
-                self.t_wps = np.zeros(len(self.T_segment) + 1)
-                self.t_wps[1:] = np.cumsum(self.T_segment)
-            
-            if (self.xyzType >= 3 and self.xyzType <= 6):
-                self.deriv_order = int(self.xyzType-2)       # Looking to minimize which derivative order (eg: Minimum velocity -> first order)
-
-                # Calculate coefficients
-                self.coeff_x = minSomethingTraj(self.wps[:,0], self.T_segment, self.deriv_order)
-                self.coeff_y = minSomethingTraj(self.wps[:,1], self.T_segment, self.deriv_order)
-                self.coeff_z = minSomethingTraj(self.wps[:,2], self.T_segment, self.deriv_order)
-
-            elif (self.xyzType >= 7 and self.xyzType <= 9):
-                self.deriv_order = int(self.xyzType-5)       # Looking to minimize which derivative order (eg: Minimum accel -> second order)
-
-                # Calculate coefficients
-                self.coeff_x = minSomethingTraj_stop(self.wps[:,0], self.T_segment, self.deriv_order)
-                self.coeff_y = minSomethingTraj_stop(self.wps[:,1], self.T_segment, self.deriv_order)
-                self.coeff_z = minSomethingTraj_stop(self.wps[:,2], self.T_segment, self.deriv_order)
-            
-            elif (self.xyzType >= 10 and self.xyzType <= 11):
-                self.deriv_order = int(self.xyzType-7)       # Looking to minimize which derivative order (eg: Minimum jerk -> third order)
-
-                # Calculate coefficients
-                self.coeff_x = minSomethingTraj_faststop(self.wps[:,0], self.T_segment, self.deriv_order)
-                self.coeff_y = minSomethingTraj_faststop(self.wps[:,1], self.T_segment, self.deriv_order)
-                self.coeff_z = minSomethingTraj_faststop(self.wps[:,2], self.T_segment, self.deriv_order)
+        self.T_segment = np.diff(self.t_wps)
+        distance_segment = self.wps[1:] - self.wps[:-1]
+        self.T_segment = np.linalg.norm(distance_segment, axis=1) / self.v_wp
+        self.t_wps = np.zeros(len(self.T_segment) + 1)
+        self.t_wps[1:] = np.cumsum(self.T_segment)
         
-        if (self.yawType == 4):
-            self.y_wps = np.zeros(len(self.t_wps))
+        if 3 <= self.xyzType <= 6:
+            self.deriv_order = int(self.xyzType - 2) # Looking to minimize which derivative order (eg: Minimum velocity -> first order)
+            self.coeff_x = minSomethingTraj(self.wps[:, 0], self.T_segment, self.deriv_order)
+            self.coeff_y = minSomethingTraj(self.wps[:, 1], self.T_segment, self.deriv_order)
+            self.coeff_z = minSomethingTraj(self.wps[:, 2], self.T_segment, self.deriv_order)
+        elif 7 <= self.xyzType <= 9:
+            self.deriv_order = int(self.xyzType - 5) # Looking to minimize which derivative order (eg: Minimum accel -> second order)
+            self.coeff_x = minSomethingTraj_stop(self.wps[:, 0], self.T_segment, self.deriv_order)
+            self.coeff_y = minSomethingTraj_stop(self.wps[:, 1], self.T_segment, self.deriv_order)
+            self.coeff_z = minSomethingTraj_stop(self.wps[:, 2], self.T_segment, self.deriv_order)
+        elif 10 <= self.xyzType <= 13:
+                self.deriv_order = int(self.xyzType - 7) # Looking to minimize which derivative order (eg: Minimum jerk -> third order)
+                self.coeff_x = minSomethingTraj_faststop(self.wps[:, 0], self.T_segment, self.deriv_order)
+                self.coeff_y = minSomethingTraj_faststop(self.wps[:, 1], self.T_segment, self.deriv_order)
+                self.coeff_z = minSomethingTraj_faststop(self.wps[:, 2], self.T_segment, self.deriv_order)
         
-        # Get initial heading
-        self.current_heading = quad.psi
+        self.current_heading = self.quad.psi # Get initial heading
+        self.reset_desired_state() # Initialize trajectory setpoint
         
-        # Initialize trajectory setpoint
+    @property
+    def sDes(self):
+        return np.hstack((
+            self.desPos, self.desVel, self.desAcc, 
+            self.desThr, self.desEul, self.desPQR, self.desYawRate
+        )).astype(float)
+
+    def reset_desired_state(self):
         self.desPos = np.zeros(3)    # Desired position (x, y, z)
         self.desVel = np.zeros(3)    # Desired velocity (xdot, ydot, zdot)
         self.desAcc = np.zeros(3)    # Desired acceleration (xdotdot, ydotdot, zdotdot)
-        self.desThr = np.zeros(3)    # Desired thrust in N-E-D directions (or E-N-U, if selected)
-        self.desEul = np.zeros(3)    # Desired orientation in the world frame (phi, theta, psi)
-        self.desPQR = np.zeros(3)    # Desired angular velocity in the body frame (p, q, r)
-        self.desYawRate = 0.         # Desired yaw speed
-        self.sDes = np.hstack((self.desPos, self.desVel, self.desAcc, self.desThr, self.desEul, self.desPQR, self.desYawRate)).astype(float)
-
-
-    def desiredState(self, t, Ts, quad):
-        
-        self.desPos = np.zeros(3)    # Desired position (x, y, z)
-        self.desVel = np.zeros(3)    # Desired velocity (xdot, ydot, zdot)
-        self.desAcc = np.zeros(3)    # Desired acceleration (xdotdot, ydotdot, zdotdot)
-        self.desThr = np.zeros(3)    # Desired thrust in N-E-D directions (or E-N-U, if selected)
+        self.desThr = np.zeros(3)    # Desired thrust in N-E-D directions
         self.desEul = np.zeros(3)    # Desired orientation in the world frame (phi, theta, psi)
         self.desPQR = np.zeros(3)    # Desired angular velocity in the body frame (p, q, r)
         self.desYawRate = 0.         # Desired yaw speed
 
+    def get_desired_state(self, t, Ts):
         def pos_waypoint_timed():
-            
             if not (len(self.t_wps) == self.wps.shape[0]):
                 raise Exception("Time array and waypoint array not the same size.")
             elif (np.diff(self.t_wps) <= 0).any():
@@ -113,7 +78,6 @@ class Trajectory:
             
             self.desPos = self.wps[self.t_idx,:]
                             
-        
         def pos_waypoint_interp():
             
             if not (len(self.t_wps) == self.wps.shape[0]):
@@ -137,24 +101,20 @@ class Trajectory:
             minimum velocity, acceleration, jerk or snap trajectory which goes through each waypoint. 
             The output is the desired state associated with the next waypoint for the time t.
             """
-            if not (len(self.t_wps) == self.wps.shape[0]):
+            if len(self.t_wps) != self.wps.shape[0]:
                 raise Exception("Time array and waypoint array not the same size.")
                 
-            nb_coeff = self.deriv_order*2
-
-            # Hover at t=0
-            if t == 0:
+            nb_coeff = self.deriv_order * 2
+            if t == 0: # Hover at t=0
                 self.t_idx = 0
-                self.desPos = self.wps[0,:]
-            # Stay hover at the last waypoint position
-            elif (t >= self.t_wps[-1]):
+                self.desPos = self.wps[0, :]
+            elif t >= self.t_wps[-1]:  # Stay hover at the last waypoint position
                 self.t_idx = -1
-                self.desPos = self.wps[-1,:]
+                self.desPos = self.wps[-1, :]
             else:
                 self.t_idx = np.where(t <= self.t_wps)[0][0] - 1
-                
                 # Scaled time (between 0 and duration of segment)
-                scale = (t - self.t_wps[self.t_idx])
+                scale = t - self.t_wps[self.t_idx]
                 
                 # Which coefficients to use
                 start = nb_coeff * self.t_idx
@@ -162,13 +122,25 @@ class Trajectory:
                 
                 # Set desired position, velocity and acceleration
                 t0 = get_poly_cc(nb_coeff, 0, scale)
-                self.desPos = np.array([self.coeff_x[start:end].dot(t0), self.coeff_y[start:end].dot(t0), self.coeff_z[start:end].dot(t0)])
+                self.desPos = np.array([
+                    self.coeff_x[start:end] @ t0, 
+                    self.coeff_y[start:end] @ t0, 
+                    self.coeff_z[start:end] @ t0
+                ])
 
                 t1 = get_poly_cc(nb_coeff, 1, scale)
-                self.desVel = np.array([self.coeff_x[start:end].dot(t1), self.coeff_y[start:end].dot(t1), self.coeff_z[start:end].dot(t1)])
+                self.desVel = np.array([
+                    self.coeff_x[start:end] @ t1, 
+                    self.coeff_y[start:end] @ t1, 
+                    self.coeff_z[start:end] @ t1
+                ])
 
                 t2 = get_poly_cc(nb_coeff, 2, scale)
-                self.desAcc = np.array([self.coeff_x[start:end].dot(t2), self.coeff_y[start:end].dot(t2), self.coeff_z[start:end].dot(t2)])
+                self.desAcc = np.array([
+                    self.coeff_x[start:end] @ t2, 
+                    self.coeff_y[start:end] @ t2, 
+                    self.coeff_z[start:end] @ t2
+                ])
         
         def pos_waypoint_arrived():
 
@@ -177,7 +149,7 @@ class Trajectory:
                 self.t_idx = 0
                 self.end_reached = 0
             elif not(self.end_reached):
-                distance_to_next_wp = ((self.wps[self.t_idx,0]-quad.pos[0])**2 + (self.wps[self.t_idx,1]-quad.pos[1])**2 + (self.wps[self.t_idx,2]-quad.pos[2])**2)**(0.5)
+                distance_to_next_wp = ((self.wps[self.t_idx,0]-self.quad.pos[0])**2 + (self.wps[self.t_idx,1]-self.quad.pos[1])**2 + (self.wps[self.t_idx,2]-self.quad.pos[2])**2)**(0.5)
                 if (distance_to_next_wp < dist_consider_arrived):
                     self.t_idx += 1
                     if (self.t_idx >= len(self.wps[:,0])):    # if t_idx has reached the end of planned waypoints
@@ -197,7 +169,7 @@ class Trajectory:
             
             # If end is not reached, calculate distance to next waypoint
             elif not(self.end_reached):     
-                distance_to_next_wp = ((self.wps[self.t_idx,0]-quad.pos[0])**2 + (self.wps[self.t_idx,1]-quad.pos[1])**2 + (self.wps[self.t_idx,2]-quad.pos[2])**2)**(0.5)
+                distance_to_next_wp = ((self.wps[self.t_idx,0]-self.quad.pos[0])**2 + (self.wps[self.t_idx,1]-self.quad.pos[1])**2 + (self.wps[self.t_idx,2]-self.quad.pos[2])**2)**(0.5)
                 
                 # If waypoint distance is below a threshold, specify the arrival time and confirm arrival
                 if (distance_to_next_wp < dist_consider_arrived) and not self.arrived:
@@ -217,151 +189,84 @@ class Trajectory:
                     
             self.desPos = self.wps[self.t_idx,:]
 
-        def yaw_waypoint_timed():
-            
-            if not (len(self.t_wps) == len(self.y_wps)):
-                raise Exception("Time array and waypoint array not the same size.")
-            
-            self.desEul[2] = self.y_wps[self.t_idx]
-                    
-
-        def yaw_waypoint_interp():
-
-            if not (len(self.t_wps) == len(self.y_wps)):
-                raise Exception("Time array and waypoint array not the same size.")
-
-            if (t == 0) or (t >= self.t_wps[-1]):
-                self.desEul[2] = self.y_wps[self.t_idx]
-            else:
-                scale = (t - self.t_wps[self.t_idx])/self.T_segment[self.t_idx]
-                self.desEul[2] = (1 - scale)*self.y_wps[self.t_idx] + scale*self.y_wps[self.t_idx + 1]
-                
-                # Angle between current vector with the next heading vector
-                delta_psi = self.desEul[2] - self.current_heading
-                
-                # Set Yaw rate
-                self.desYawRate = delta_psi / Ts 
-
-                # Prepare next iteration
-                self.current_heading = self.desEul[2]
-        
-
         def yaw_follow():
-
-            if (self.xyzType == 1 or self.xyzType == 2 or self.xyzType == 12):
+            if self.xyzType in [1, 2, 12]:
                 if (t == 0):
                     self.desEul[2] = 0
                 else:
                     # Calculate desired Yaw
-                    self.desEul[2] = np.arctan2(self.desPos[1]-quad.pos[1], self.desPos[0]-quad.pos[0])
-            
-            elif (self.xyzType == 13):
+                    self.desEul[2] = np.arctan2(self.desPos[1]-self.quad.pos[1], self.desPos[0]-self.quad.pos[0])
+            elif self.xyzType == 13:
                 if (t == 0):
                     self.desEul[2] = 0
                     self.prevDesYaw = self.desEul[2]
                 else:
                     if not (self.arrived):
                         # Calculate desired Yaw
-                        self.desEul[2] = np.arctan2(self.desPos[1]-quad.pos[1], self.desPos[0]-quad.pos[0])
+                        self.desEul[2] = np.arctan2(self.desPos[1]-self.quad.pos[1], self.desPos[0]-self.quad.pos[0])
                         self.prevDesYaw = self.desEul[2]
                     else:
                         self.desEul[2] = self.prevDesYaw
-
             else:
-                if (t == 0) or (t >= self.t_wps[-1]):
+                if t == 0 or t >= self.t_wps[-1]:
                     self.desEul[2] = self.y_wps[self.t_idx]
                 else:
                     # Calculate desired Yaw
                     self.desEul[2] = np.arctan2(self.desVel[1], self.desVel[0])
                     
-            # Dirty hack, detect when desEul[2] switches from -pi to pi (or vice-versa) and switch manualy current_heading 
-            if (np.sign(self.desEul[2]) - np.sign(self.current_heading) and abs(self.desEul[2]-self.current_heading) >= 2*pi-0.1):
-                self.current_heading = self.current_heading + np.sign(self.desEul[2])*2*pi
+            # Dirty hack, detect when desEul[2] switches from -np.pi to np.pi (or vice-versa) and switch manualy current_heading 
+            if (np.sign(self.desEul[2]) - np.sign(self.current_heading) and abs(self.desEul[2]-self.current_heading) >= 2 * np.pi - 0.1):
+                self.current_heading += np.sign(self.desEul[2]) * 2 * np.pi
             
             # Angle between current vector with the next heading vector
             delta_psi = self.desEul[2] - self.current_heading
-            
             # Set Yaw rate
             self.desYawRate = delta_psi / Ts 
-
             # Prepare next iteration
             self.current_heading = self.desEul[2]
 
-
-        if (self.ctrlType == "xyz_vel"):
-            if (self.xyzType == 1):
-                self.sDes = testVelControl(t)
-
-        elif (self.ctrlType == "xy_vel_z_pos"):
-            if (self.xyzType == 1):
-                self.sDes = testVelControl(t)
-        
-        elif (self.ctrlType == "xyz_pos"):
-            # Hover at [0, 0, 0]
-            if (self.xyzType == 0):
-                pass 
-            # For simple testing
-            elif (self.xyzType == 99):
+        self.reset_desired_state()
+        match self.xyzType:
+            case 0: # Hover at [0, 0, 0]
+                pass
+                # self.desPos[2] = 10
+                # self.desAcc[2] = self.quad.m * self.quad.g
+            case 99: # For simple testing
                 self.sDes = testXYZposition(t)   
-            else:    
-                # List of possible position trajectories
-                # ---------------------------
-                # Set desired positions at every t_wps[i]
-                if (self.xyzType == 1):
-                    pos_waypoint_timed()
-                # Interpolate position between every waypoint, to arrive at desired position every t_wps[i]
-                elif (self.xyzType == 2):
-                    pos_waypoint_interp()
-                # Calculate a minimum velocity, acceleration, jerk or snap trajectory
-                elif (self.xyzType >= 3 and self.xyzType <= 11):
-                    pos_waypoint_min()
-                # Go to next waypoint when arrived at waypoint
-                elif (self.xyzType == 12):
-                    pos_waypoint_arrived()
-                # Go to next waypoint when arrived at waypoint after waiting x seconds
-                elif (self.xyzType == 13):
-                    pos_waypoint_arrived_wait()
-                
-                # List of possible yaw trajectories
-                # ---------------------------
-                # Set desired yaw at every t_wps[i]
-                if (self.yawType == 0):
-                    pass
-                elif (self.yawType == 1):
-                    yaw_waypoint_timed()
-                # Interpolate yaw between every waypoint, to arrive at desired yaw every t_wps[i]
-                elif (self.yawType == 2):
-                    yaw_waypoint_interp()
-                # Have the drone's heading match its desired velocity direction
-                elif (self.yawType == 3):
-                    yaw_follow()
-
-                self.sDes = np.hstack((self.desPos, self.desVel, self.desAcc, self.desThr, self.desEul, self.desPQR, self.desYawRate)).astype(float)
-        
-        return self.sDes
-
+            case 1: # Set desired positions at every t_wps[i]
+                pos_waypoint_timed()
+                yaw_follow()
+            case 2: # Interpolate position between every waypoint, to arrive at desired position every t_wps[i]
+                pos_waypoint_interp()
+                yaw_follow()
+            case i if 3 <= i <= 11: # Calculate a minimum velocity, acceleration, jerk or snap trajectory
+                pos_waypoint_min()
+                yaw_follow()
+            case 12: # Go to next waypoint when arrived at waypoint
+                pos_waypoint_arrived()
+                yaw_follow()
+            case 13: # Go to next waypoint when arrived at waypoint after waiting x seconds
+                pos_waypoint_arrived_wait()  
+                yaw_follow()
+            
 
 def get_poly_cc(n, k, t):
     """ This is a helper function to get the coeffitient of coefficient for n-th
         order polynomial with k-th derivative at time t.
     """
-    assert (n > 0 and k >= 0), "order and derivative must be positive."
-
+    assert n > 0 and k >= 0, "order and derivative must be positive."
     cc = np.ones(n)
-    D  = np.linspace(n-1, 0, n)
+    D = np.linspace(n - 1, 0, n)
 
     for i in range(n):
-        for j in range(k):
-            cc[i] = cc[i] * D[i]
-            D[i] = D[i] - 1
+        for _ in range(k):
+            cc[i] *= D[i]
+            D[i] -= 1
             if D[i] == -1:
                 D[i] = 0
 
-    for i, c in enumerate(cc):
-        cc[i] = c * np.power(t, D[i])
-
+        cc[i] *= np.power(t, D[i])
     return cc
-
 
 def minSomethingTraj(waypoints, times, order):
     """ This function takes a list of desired waypoint i.e. [x0, x1, x2...xN] and
@@ -411,44 +316,35 @@ def minSomethingTraj(waypoints, times, order):
     Each element in a row represents the coefficient of coeffient aij under
     a certain constraint, where aij is the jth coeffient of Pi with i = 1...N, j = 0...(M-1).
     """
-
     n = len(waypoints) - 1
-    nb_coeff = order*2
-
+    nb_coeff = order * 2
     # initialize A, and B matrix
-    A = np.zeros([nb_coeff*n, nb_coeff*n])
-    B = np.zeros(nb_coeff*n)
-
+    A = np.zeros([nb_coeff * n, nb_coeff * n])
+    B = np.zeros(nb_coeff * n)
     # populate B matrix.
     for i in range(n):
         B[i] = waypoints[i]
-        B[i + n] = waypoints[i+1]
+        B[i + n] = waypoints[i + 1]
 
     # Constraint 1 - Starting position for every segment
-    for i in range(n):
-        A[i][nb_coeff*i:nb_coeff*(i+1)] = get_poly_cc(nb_coeff, 0, 0)
-
+        A[i][nb_coeff * i:nb_coeff * (i + 1)] = get_poly_cc(nb_coeff, 0, 0)
     # Constraint 2 - Ending position for every segment
-    for i in range(n):
-        A[i+n][nb_coeff*i:nb_coeff*(i+1)] = get_poly_cc(nb_coeff, 0, times[i])
-
+        A[i + n][nb_coeff * i:nb_coeff * (i + 1)] = get_poly_cc(nb_coeff, 0, times[i])
     # Constraint 3 - Starting position derivatives (up to order) are null
     for k in range(1, order):
-        A[2*n+k-1][:nb_coeff] = get_poly_cc(nb_coeff, k, 0)
-
+        A[2 * n + k - 1][:nb_coeff] = get_poly_cc(nb_coeff, k, 0)
     # Constraint 4 - Ending position derivatives (up to order) are null
-    for k in range(1, order):
-        A[2*n+(order-1)+k-1][-nb_coeff:] = get_poly_cc(nb_coeff, k, times[i])
-    
+        A[2 * n + (order - 1) + k - 1][-nb_coeff:] = get_poly_cc(nb_coeff, k, times[i])
     # Constraint 5 - All derivatives are continuous at each waypint transition
-    for i in range(n-1):
-        for k in range(1, nb_coeff-1):
-            A[2*n+2*(order-1) + i*2*(order-1)+k-1][i*nb_coeff : (i*nb_coeff+nb_coeff*2)] = np.concatenate((get_poly_cc(nb_coeff, k, times[i]), -get_poly_cc(nb_coeff, k, 0)))
-    
-    # solve for the coefficients
-    Coeff = np.linalg.solve(A, B)
-    return Coeff
+    for i in range(n - 1):
+        for k in range(1, nb_coeff - 1):
+            A[2 * n + 2 * (order-1) * (i + 1) + k - 1][i * nb_coeff : (i + 2) * nb_coeff] = np.concatenate((
+                get_poly_cc(nb_coeff, k, times[i]), 
+                -get_poly_cc(nb_coeff, k, 0)
+            ))
 
+    # solve for the coefficients
+    return np.linalg.solve(A, B)
 
 # Minimum acceleration/jerk/snap Trajectory, but with null velocity, accel and jerk at each waypoint
 def minSomethingTraj_stop(waypoints, times, order):
@@ -472,40 +368,28 @@ def minSomethingTraj_stop(waypoints, times, order):
     this function generates trajectories with null velocities, accelerations and jerks at each waypoints. 
     This will make the drone stop for an instant at each waypoint.
     """
-
     n = len(waypoints) - 1
-    nb_coeff = order*2
-
+    nb_coeff = order * 2
     # initialize A, and B matrix
-    A = np.zeros([nb_coeff*n, nb_coeff*n])
-    B = np.zeros(nb_coeff*n)
+    A = np.zeros([nb_coeff * n, nb_coeff * n])
+    B = np.zeros(nb_coeff * n)
 
     # populate B matrix.
     for i in range(n):
         B[i] = waypoints[i]
-        B[i + n] = waypoints[i+1]
-
+        B[i + n] = waypoints[i + 1]
     # Constraint 1 - Starting position for every segment
-    for i in range(n):
-        A[i][nb_coeff*i:nb_coeff*(i+1)] = get_poly_cc(nb_coeff, 0, 0)
-
+        A[i][nb_coeff * i:nb_coeff * (i + 1)] = get_poly_cc(nb_coeff, 0, 0)
     # Constraint 2 - Ending position for every segment
-    for i in range(n):
-        A[i+n][nb_coeff*i:nb_coeff*(i+1)] = get_poly_cc(nb_coeff, 0, times[i])
-
+        A[i + n][nb_coeff * i:nb_coeff * (i + 1)] = get_poly_cc(nb_coeff, 0, times[i])
     # Constraint 3 - Starting position derivatives (up to order) for each segment are null
-    for i in range(n):
         for k in range(1, order):
-            A[2*n + k-1 + i*(order-1)][nb_coeff*i:nb_coeff*(i+1)] = get_poly_cc(nb_coeff, k, 0)
-
+            A[2 * n + k - 1 + i * (order - 1)][nb_coeff * i:nb_coeff * (i + 1)] = get_poly_cc(nb_coeff, k, 0)
     # Constraint 4 - Ending position derivatives (up to order) for each segment are null
-    for i in range(n):
-        for k in range(1, order):
-            A[2*n+(order-1)*n + k-1 + i*(order-1)][nb_coeff*i:nb_coeff*(i+1)] = get_poly_cc(nb_coeff, k, times[i])
+            A[2 * n + (order - 1) * n + k - 1 + i * (order - 1)][nb_coeff * i:nb_coeff * (i + 1)] = get_poly_cc(nb_coeff, k, times[i])
     
     # solve for the coefficients
-    Coeff = np.linalg.solve(A, B)
-    return Coeff
+    return np.linalg.solve(A, B)
 
 # Minimum acceleration/jerk/snap Trajectory, but with null velocity only at each waypoint
 def minSomethingTraj_faststop(waypoints, times, order):
@@ -532,62 +416,42 @@ def minSomethingTraj_faststop(waypoints, times, order):
     """
 
     n = len(waypoints) - 1
-    nb_coeff = order*2
-
+    nb_coeff = order * 2
     # initialize A, and B matrix
-    A = np.zeros([nb_coeff*n, nb_coeff*n])
-    B = np.zeros(nb_coeff*n)
-
+    A = np.zeros([nb_coeff * n, nb_coeff * n])
+    B = np.zeros(nb_coeff * n)
     # populate B matrix.
     for i in range(n):
         B[i] = waypoints[i]
-        B[i + n] = waypoints[i+1]
+        B[i + n] = waypoints[i + 1]
 
     # Constraint 1 - Starting position for every segment
-    for i in range(n):
-        # print(i)
-        A[i][nb_coeff*i:nb_coeff*(i+1)] = get_poly_cc(nb_coeff, 0, 0)
-
+        A[i][nb_coeff * i:nb_coeff * (i + 1)] = get_poly_cc(nb_coeff, 0, 0)
     # Constraint 2 - Ending position for every segment
-    for i in range(n):
-        # print(i+n)
-        A[i+n][nb_coeff*i:nb_coeff*(i+1)] = get_poly_cc(nb_coeff, 0, times[i])
-
+        A[i + n][nb_coeff * i:nb_coeff * (i + 1)] = get_poly_cc(nb_coeff, 0, times[i])
     # Constraint 3 - Starting velocity for every segment is null
-    for i in range(n):
-        # print(i+2*n)
-        A[i+2*n][nb_coeff*i:nb_coeff*(i+1)] = get_poly_cc(nb_coeff, 1, 0)
-
+        A[i + 2 * n][nb_coeff * i:nb_coeff * (i + 1)] = get_poly_cc(nb_coeff, 1, 0)
     # Constraint 4 - Ending velocity for every segment is null
-    for i in range(n):
-        # print(i+3*n)
-        A[i+3*n][nb_coeff*i:nb_coeff*(i+1)] = get_poly_cc(nb_coeff, 1, times[i])
-
+        A[i + 3 * n][nb_coeff * i:nb_coeff * (i + 1)] = get_poly_cc(nb_coeff, 1, times[i])
     # Constraint 5 - Starting position derivatives (above velocity and up to order) are null
     for k in range(2, order):
-        # print(4*n + k-2)
-        A[4*n+k-2][:nb_coeff] = get_poly_cc(nb_coeff, k, 0)
-
+        A[4 * n + k - 2][:nb_coeff] = get_poly_cc(nb_coeff, k, 0)
     # Constraint 6 - Ending position derivatives (above velocity and up to order) are null
-    for k in range(2, order):
-        # print(4*n+(order-2) + k-2)
-        A[4*n+k-2+(order-2)][-nb_coeff:] = get_poly_cc(nb_coeff, k, times[i])
-
+        A[4 * n + k - 2 + (order - 2)][-nb_coeff:] = get_poly_cc(nb_coeff, k, times[i])
     # Constraint 7 - All derivatives above velocity are continuous at each waypint transition
-    for i in range(n-1):
-        for k in range(2, nb_coeff-2):
-            # print(4*n+2*(order-2)+k-2+i*(nb_coeff-4))
-            A[4*n+2*(order-2)+k-2+i*(nb_coeff-4)][i*nb_coeff : (i*nb_coeff+nb_coeff*2)] = np.concatenate((get_poly_cc(nb_coeff, k, times[i]), -get_poly_cc(nb_coeff, k, 0)))
-            
+    for i in range(n - 1):
+        for k in range(2, nb_coeff - 2):
+            A[4 * n + 2 * (order - 2) + k - 2 + i * (nb_coeff - 4)][i * nb_coeff:(i* nb_coeff + nb_coeff * 2)] = np.concatenate((
+                get_poly_cc(nb_coeff, k, times[i]), 
+                -get_poly_cc(nb_coeff, k, 0)
+            ))
 
     # solve for the coefficients
-    Coeff = np.linalg.solve(A, B)
-    return Coeff
+    return np.linalg.solve(A, B)
 
 
 
 ## Testing scripts
-
 def testXYZposition(t):
     desPos = np.array([0., 0., 0.])
     desVel = np.array([0., 0., 0.])
@@ -595,18 +459,17 @@ def testXYZposition(t):
     desThr = np.array([0., 0., 0.])
     desEul = np.array([0., 0., 0.])
     desPQR = np.array([0., 0., 0.])
-    desYawRate = 30.0*pi/180
+    desYawRate = 30.0*np.pi/180
     
     if t >= 1 and t < 4:
         desPos = np.array([2, 2, 1])
     elif t >= 4:
         desPos = np.array([2, -2, -2])
-        desEul = np.array([0, 0, pi/3])
+        desEul = np.array([0, 0, np.pi/3])
     
     sDes = np.hstack((desPos, desVel, desAcc, desThr, desEul, desPQR, desYawRate)).astype(float)
 
     return sDes
-
 
 def testVelControl(t):
     desPos = np.array([0., 0., 0.])
