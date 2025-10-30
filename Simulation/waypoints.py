@@ -9,11 +9,6 @@ import numpy as np
 
 def makeWaypoints():
     v_average = 1.6
-
-    t_ini = 20
-    t = np.array([t_ini, 2, 0, 2, 0, t_ini])
-    # t = np.array([t_ini])
-    
     wp_ini = np.array([0, 0, -5])
     wp = np.array([
         wp_ini,
@@ -23,9 +18,13 @@ def makeWaypoints():
         [3, -2, 1],
         wp_ini
     ])
-
     yaw_ini = 0    
-    yaw = np.array([yaw_ini, 20, -90, 120, 45, yaw_ini])
-    # yaw = np.array([yaw_ini])
-    yaw = np.deg2rad(yaw.astype(float))
-    return t, wp, yaw, v_average
+    yaw = np.array([
+        yaw_ini, 
+        20, 
+        -90, 
+        120, 
+        45, 
+        yaw_ini
+    ])
+    return wp, np.deg2rad(yaw.astype(float)), v_average

@@ -8,6 +8,7 @@ Please feel free to use and modify this, but keep the above information. Thanks!
 import numpy as np
 from quadFiles.initQuad import sys_params
 import utils
+from utils import Quat
 import config
 
 class Quadcopter:
@@ -37,47 +38,24 @@ class Quadcopter:
 
         # Initial State (Quaternion)
         # ---------------------------
-        quat = utils.eulerZYX2quat(0, 0, 0) # psi, theta, phi in rad
-        s = [
-            0, 0, 0, # s (x, y, z)
-            quat[0], quat[1], quat[2], quat[3], # quaternion
-            0, 0, 0, # s_dot (dx, dy, dz)
-            0, 0, 0, # omega_dot (p, q, r)
-            omega_hover, 0, # omega1: Hovering motor speed, motor acc
-            omega_hover, 0, # omega2
-            omega_hover, 0, # omega3
-            omega_hover, 0, # omega4
-        ]
-        self.state = np.array(s)
-
-        self.pos = self.state[0:3]
-        self.quat = self.state[3:7]
-        self.vel = self.state[7:10]
-        self.omega = self.state[10:13]
-        self.motor_omega = np.array([*self.state[13:20:2]])
+        self.pos = np.zeros(3)
+        self.vel = np.zeros(3)
+        self.quat = Quat().from_eulerZYX(0, 0, 0)
+        self.omega = np.zeros(3)
+        self.motor_omega = np.full(4, omega_hover)
+        self.d_motor_omega = np.zeros(4)
         self.vel_dot = np.zeros(3)
         self.omega_dot = np.zeros(3)
-
-        self.extended_state()
-        self.forces()
      
-    def extended_state(self):
-        # Rotation Matrix of current state (Direct Cosine Matrix)
-        self.R = utils.quat2R(self.quat)
+    @property
+    def state(self):
+        return np.hstack([
+            self.pos, self.quat.q, 
+            self.vel, self.omega,
+            self.motor_omega, self.d_motor_omega
+        ])
 
-        # Euler angles of current state
-        YPR = utils.quat2EulerZYX(self.quat)
-        self.euler = YPR[::-1] # flip YPR so that euler state = phi, theta, psi
-        self.psi   = YPR[0]
-        self.theta = YPR[1]
-        self.phi   = YPR[2]
-
-    def forces(self):
-        # Rotor thrusts and torques
-        self.thr = self.kTh * self.motor_omega * self.motor_omega
-        self.tor = self.kTo * self.motor_omega * self.motor_omega
-
-    def d_state(self, t, state, cmd, wind):
+    def d_state(self, t, state, u_ctrl, wind):
         # Import Params
         # ---------------------------    
         x_arm = self.params["x_arm"]
@@ -98,17 +76,14 @@ class Quadcopter:
             qw, qx, qy, qz,
             dx, dy, dz,
             p, q, r,
-            omega1, d_omega1,
-            omega2, d_omega2,
-            omega3, d_omega3,
-            omega4, d_omega4
-        ] = state[3:21]
-        motor_omega = np.array([omega1, omega2, omega3, omega4])
-        d_motor_omega = np.array([d_omega1, d_omega2, d_omega3, d_omega4])
+            omega1, omega2,
+            omega3, omega4,
+        ] = state[3:17]
+        motor_omega = state[13:17]
+        d_motor_omega = state[17:21]
 
         # Motor Dynamics and Rotor forces (Second Order System: https://apmonitor.com/pdc/index.php/Main/SecondOrderSystems)
         # ---------------------------
-        u_ctrl = np.array([*cmd[:4]])
         dd_omega = (-2.0 * damp * tau * d_motor_omega - motor_omega + kp * u_ctrl) / tau**2
         motor_omega = np.clip(motor_omega, rotor_omega_min, rotor_omega_max)
         thrust = self.kTh * motor_omega * motor_omega
@@ -120,8 +95,6 @@ class Quadcopter:
         # Wind Model
         # ---------------------------
         velW, qW1, qW2 = wind.randomWind(t)
-        # velW = 0
-
         # velW = 5          # m/s
         # qW1 = 0*deg2rad    # Wind heading
         # qW2 = 60*deg2rad     # Wind elevation (positive = upwards wind in NED, positive = downwards wind in ENU)
@@ -149,24 +122,17 @@ class Quadcopter:
     
         # State Derivative Vector
         # ---------------------------
-        sdot = np.zeros(21)
-        sdot[:13] = d_dynamics
-        sdot[13:20:2] = d_motor_omega
-        sdot[14:21:2] = dd_omega
-        return sdot
+        return np.hstack([d_dynamics, d_motor_omega, dd_omega])
 
-    def update(self, Ts, quad_state):
+    def update(self, Ts, new_state):
         prev_vel = self.vel
         prev_omega = self.omega
 
-        self.pos = quad_state[0:3]
-        self.quat = quad_state[3:7]
-        self.vel = quad_state[7:10]
-        self.omega = quad_state[10:13]
-        self.motor_omega = np.array([*quad_state[13:20:2]])
+        self.pos = new_state[0:3]
+        self.quat.q = new_state[3:7]
+        self.vel = new_state[7:10]
+        self.omega = new_state[10:13]
+        self.motor_omega = new_state[13:17]
 
         self.vel_dot = (self.vel - prev_vel) / Ts
         self.omega_dot = (self.omega - prev_omega) / Ts
-
-        self.extended_state()
-        self.forces()

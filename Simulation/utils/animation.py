@@ -14,7 +14,7 @@ import utils
 
 numFrames = 8
 
-def sameAxisAnimation(t_all, waypoints, pos_all, quat_all, sDes_tr_all, Ts, params, xyzType):
+def sameAxisAnimation(t_all, waypoints, pos_all, theta_all, sDes_tr_all, Ts, params, xyzType):
     x = pos_all[:, 0]
     y = pos_all[:, 1]
     z = pos_all[:, 2]
@@ -103,12 +103,12 @@ def sameAxisAnimation(t_all, waypoints, pos_all, quat_all, sDes_tr_all, Ts, para
         y_arm = params["y_arm"]
         motor_h = params["motor_h"]
         
-        quat = quat_all[i * numFrames]
+        Theta = theta_all[i * numFrames]
     
         z = -z
         z_from0 = -z_from0
-        quat = np.array([quat[0], -quat[1], -quat[2], quat[3]])
-        R = utils.quat2R(quat)    
+        q = utils.Quat()
+        q.from_eulerZYX(*Theta)
         motorPoints = np.array([
             [x_arm, -y_arm, motor_h], 
             [0, 0, 0], 
@@ -117,7 +117,7 @@ def sameAxisAnimation(t_all, waypoints, pos_all, quat_all, sDes_tr_all, Ts, para
             [0, 0, 0], 
             [-x_arm, -y_arm, motor_h]
         ])
-        motorPoints = R @ motorPoints.T
+        motorPoints = q.R @ motorPoints.T
         motorPoints[0, :] += x 
         motorPoints[1, :] += y 
         motorPoints[2, :] += z 

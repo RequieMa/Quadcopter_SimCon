@@ -18,14 +18,12 @@ class Trajectory:
     def __init__(self, quad, trajSelect):
         self.quad = quad
         self.xyzType = trajSelect
-        self.t_wps, self.wps, self.y_wps, self.v_wp = makeWaypoints()
+        self.wps, self.y_wps, self.v_wp = makeWaypoints()
 
         self.end_reached = 0
-        self.T_segment = np.diff(self.t_wps)
-        distance_segment = self.wps[1:] - self.wps[:-1]
+        distance_segment = np.diff(self.wps, axis=0)
         self.T_segment = np.linalg.norm(distance_segment, axis=1) / self.v_wp
-        self.t_wps = np.zeros(len(self.T_segment) + 1)
-        self.t_wps[1:] = np.cumsum(self.T_segment)
+        self.t_wps = np.hstack([0.0, np.cumsum(self.T_segment)])
         
         if 3 <= self.xyzType <= 6:
             self.deriv_order = int(self.xyzType - 2) # Looking to minimize which derivative order (eg: Minimum velocity -> first order)
@@ -38,63 +36,59 @@ class Trajectory:
             self.coeff_y = minSomethingTraj_stop(self.wps[:, 1], self.T_segment, self.deriv_order)
             self.coeff_z = minSomethingTraj_stop(self.wps[:, 2], self.T_segment, self.deriv_order)
         elif 10 <= self.xyzType <= 13:
-                self.deriv_order = int(self.xyzType - 7) # Looking to minimize which derivative order (eg: Minimum jerk -> third order)
-                self.coeff_x = minSomethingTraj_faststop(self.wps[:, 0], self.T_segment, self.deriv_order)
-                self.coeff_y = minSomethingTraj_faststop(self.wps[:, 1], self.T_segment, self.deriv_order)
-                self.coeff_z = minSomethingTraj_faststop(self.wps[:, 2], self.T_segment, self.deriv_order)
+            self.deriv_order = int(self.xyzType - 7) # Looking to minimize which derivative order (eg: Minimum jerk -> third order)
+            self.coeff_x = minSomethingTraj_faststop(self.wps[:, 0], self.T_segment, self.deriv_order)
+            self.coeff_y = minSomethingTraj_faststop(self.wps[:, 1], self.T_segment, self.deriv_order)
+            self.coeff_z = minSomethingTraj_faststop(self.wps[:, 2], self.T_segment, self.deriv_order)
         
-        self.current_heading = self.quad.psi # Get initial heading
+        self.current_heading = self.quad.quat.eulerZYX[2] # Get initial heading
         self.reset_desired_state() # Initialize trajectory setpoint
         
     @property
     def sDes(self):
         return np.hstack((
             self.desPos, self.desVel, self.desAcc, 
-            self.desThr, self.desEul, self.desPQR, self.desYawRate
+            self.desEul, self.desYawRate
         )).astype(float)
 
     def reset_desired_state(self):
         self.desPos = np.zeros(3)    # Desired position (x, y, z)
         self.desVel = np.zeros(3)    # Desired velocity (xdot, ydot, zdot)
         self.desAcc = np.zeros(3)    # Desired acceleration (xdotdot, ydotdot, zdotdot)
-        self.desThr = np.zeros(3)    # Desired thrust in N-E-D directions
         self.desEul = np.zeros(3)    # Desired orientation in the world frame (phi, theta, psi)
-        self.desPQR = np.zeros(3)    # Desired angular velocity in the body frame (p, q, r)
         self.desYawRate = 0.         # Desired yaw speed
 
     def get_desired_state(self, t, Ts):
         def pos_waypoint_timed():
-            if not (len(self.t_wps) == self.wps.shape[0]):
+            if len(self.t_wps) != self.wps.shape[0]:
                 raise Exception("Time array and waypoint array not the same size.")
             elif (np.diff(self.t_wps) <= 0).any():
                 raise Exception("Time array isn't properly ordered.")  
             
-            if (t == 0):
+            if t == 0:
                 self.t_idx = 0
-            elif (t >= self.t_wps[-1]):
+            elif t >= self.t_wps[-1]:
                 self.t_idx = -1
             else:
                 self.t_idx = np.where(t <= self.t_wps)[0][0] - 1
-            
-            self.desPos = self.wps[self.t_idx,:]
+            self.desPos = self.wps[self.t_idx, :]
                             
         def pos_waypoint_interp():
-            
-            if not (len(self.t_wps) == self.wps.shape[0]):
+            if len(self.t_wps) != self.wps.shape[0]:
                 raise Exception("Time array and waypoint array not the same size.")
             elif (np.diff(self.t_wps) <= 0).any():
                 raise Exception("Time array isn't properly ordered.") 
 
-            if (t == 0):
+            if t == 0:
                 self.t_idx = 0
-                self.desPos = self.wps[0,:]
-            elif (t >= self.t_wps[-1]):
+                self.desPos = self.wps[self.t_idx, :]
+            elif t >= self.t_wps[-1]:
                 self.t_idx = -1
-                self.desPos = self.wps[-1,:]
+                self.desPos = self.wps[self.t_idx, :]
             else:
                 self.t_idx = np.where(t <= self.t_wps)[0][0] - 1
-                scale = (t - self.t_wps[self.t_idx])/self.T_segment[self.t_idx]
-                self.desPos = (1 - scale) * self.wps[self.t_idx,:] + scale * self.wps[self.t_idx + 1,:]
+                scale = (t - self.t_wps[self.t_idx]) / self.T_segment[self.t_idx]
+                self.desPos = (1 - scale) * self.wps[self.t_idx, :] + scale * self.wps[self.t_idx + 1, :]
         
         def pos_waypoint_min():
             """ The function takes known number of waypoints and time, then generates a
@@ -107,10 +101,10 @@ class Trajectory:
             nb_coeff = self.deriv_order * 2
             if t == 0: # Hover at t=0
                 self.t_idx = 0
-                self.desPos = self.wps[0, :]
+                self.desPos = self.wps[self.t_idx, :]
             elif t >= self.t_wps[-1]:  # Stay hover at the last waypoint position
                 self.t_idx = -1
-                self.desPos = self.wps[-1, :]
+                self.desPos = self.wps[self.t_idx, :]
             else:
                 self.t_idx = np.where(t <= self.t_wps)[0][0] - 1
                 # Scaled time (between 0 and duration of segment)
@@ -143,79 +137,59 @@ class Trajectory:
                 ])
         
         def pos_waypoint_arrived():
-
             dist_consider_arrived = 0.2 # Distance to waypoint that is considered as "arrived"
-            if (t == 0):
+            if t == 0:
                 self.t_idx = 0
                 self.end_reached = 0
-            elif not(self.end_reached):
-                distance_to_next_wp = ((self.wps[self.t_idx,0]-self.quad.pos[0])**2 + (self.wps[self.t_idx,1]-self.quad.pos[1])**2 + (self.wps[self.t_idx,2]-self.quad.pos[2])**2)**(0.5)
-                if (distance_to_next_wp < dist_consider_arrived):
+            elif not self.end_reached:
+                distance_to_next_wp = np.linalg.norm(self.wps[self.t_idx, :] - self.quad.pos)
+                if distance_to_next_wp < dist_consider_arrived:
                     self.t_idx += 1
-                    if (self.t_idx >= len(self.wps[:,0])):    # if t_idx has reached the end of planned waypoints
+                    if self.t_idx >= len(self.wps[:, 0]):    # if t_idx has reached the end of planned waypoints
                         self.end_reached = 1
                         self.t_idx = -1
-                    
-            self.desPos = self.wps[self.t_idx,:]
+            self.desPos = self.wps[self.t_idx, :]
 
         def pos_waypoint_arrived_wait():
-
             dist_consider_arrived = 0.2     # Distance to waypoint that is considered as "arrived"
-            if (t == 0):
+            if t == 0:
                 self.t_idx = 0              # Index of waypoint to go to
                 self.t_arrived = 0          # Time when arrived at first waypoint ([0, 0, 0])
                 self.arrived = True         # Bool to confirm arrived at first waypoint
                 self.end_reached = 0        # End is not reached yet
-            
-            # If end is not reached, calculate distance to next waypoint
-            elif not(self.end_reached):     
-                distance_to_next_wp = ((self.wps[self.t_idx,0]-self.quad.pos[0])**2 + (self.wps[self.t_idx,1]-self.quad.pos[1])**2 + (self.wps[self.t_idx,2]-self.quad.pos[2])**2)**(0.5)
-                
-                # If waypoint distance is below a threshold, specify the arrival time and confirm arrival
-                if (distance_to_next_wp < dist_consider_arrived) and not self.arrived:
+            elif not self.end_reached:
+                # If end is not reached, calculate distance to next waypoint
+                distance_to_next_wp = np.linalg.norm(self.wps[self.t_idx, :] - self.quad.pos)
+                if distance_to_next_wp < dist_consider_arrived and not self.arrived:
+                    # If waypoint distance is below a threshold, specify the arrival time and confirm arrival
                     self.t_arrived = t
                     self.arrived = True
-
-                # If arrived for more than xx seconds, increment waypoint index (t_idx)
-                # Replace 'self.t_wps[self.t_idx]' by any number to have a fixed waiting time for all waypoints
-                elif self.arrived and (t-self.t_arrived > self.t_wps[self.t_idx]):   
+                elif t - self.t_arrived > self.t_wps[self.t_idx]:   
+                    # If arrived for more than xx seconds, increment waypoint index (t_idx)
+                    # Replace 'self.t_wps[self.t_idx]' by any number to have a fixed waiting time for all waypoints
                     self.t_idx += 1
                     self.arrived = False
-
                     # If t_idx has reached the end of planned waypoints
-                    if (self.t_idx >= len(self.wps[:,0])):    
-                        self.end_reached = 0                  # set to  1 to stop looping
-                        self.t_idx = 0                        # set to -1 to stop looping  
-                    
-            self.desPos = self.wps[self.t_idx,:]
+                    if self.t_idx >= len(self.wps[:, 0]):    
+                        self.end_reached = 1                  # set to  1 to stop looping
+            self.desPos = self.wps[self.t_idx, :]
 
         def yaw_follow():
             if self.xyzType in [1, 2, 12]:
-                if (t == 0):
-                    self.desEul[2] = 0
-                else:
-                    # Calculate desired Yaw
-                    self.desEul[2] = np.arctan2(self.desPos[1]-self.quad.pos[1], self.desPos[0]-self.quad.pos[0])
+                self.desEul[2] = 0 if t == 0 else np.arctan2(self.desPos[1] - self.quad.pos[1], self.desPos[0] - self.quad.pos[0])
             elif self.xyzType == 13:
-                if (t == 0):
-                    self.desEul[2] = 0
-                    self.prevDesYaw = self.desEul[2]
+                if t == 0:
+                    self.prevDesYaw = self.desEul[2] = 0
                 else:
-                    if not (self.arrived):
-                        # Calculate desired Yaw
-                        self.desEul[2] = np.arctan2(self.desPos[1]-self.quad.pos[1], self.desPos[0]-self.quad.pos[0])
-                        self.prevDesYaw = self.desEul[2]
-                    else:
+                    if self.arrived:
                         self.desEul[2] = self.prevDesYaw
+                    else:
+                        self.prevDesYaw = self.desEul[2] = np.arctan2(self.desPos[1] - self.quad.pos[1], self.desPos[0] - self.quad.pos[0])
             else:
-                if t == 0 or t >= self.t_wps[-1]:
-                    self.desEul[2] = self.y_wps[self.t_idx]
-                else:
-                    # Calculate desired Yaw
-                    self.desEul[2] = np.arctan2(self.desVel[1], self.desVel[0])
+                self.desEul[2] = self.y_wps[self.t_idx] if t == 0 or t >= self.t_wps[-1] else np.arctan2(self.desVel[1], self.desVel[0])
                     
             # Dirty hack, detect when desEul[2] switches from -np.pi to np.pi (or vice-versa) and switch manualy current_heading 
-            if (np.sign(self.desEul[2]) - np.sign(self.current_heading) and abs(self.desEul[2]-self.current_heading) >= 2 * np.pi - 0.1):
+            if (np.sign(self.desEul[2]) - np.sign(self.current_heading) and abs(self.desEul[2] - self.current_heading) >= 2 * np.pi - 0.1):
                 self.current_heading += np.sign(self.desEul[2]) * 2 * np.pi
             
             # Angle between current vector with the next heading vector
@@ -227,27 +201,17 @@ class Trajectory:
 
         self.reset_desired_state()
         match self.xyzType:
-            case 0: # Hover at [0, 0, 0]
-                pass
-                # self.desPos[2] = 10
-                # self.desAcc[2] = self.quad.m * self.quad.g
-            case 99: # For simple testing
-                self.sDes = testXYZposition(t)   
             case 1: # Set desired positions at every t_wps[i]
                 pos_waypoint_timed()
-                yaw_follow()
             case 2: # Interpolate position between every waypoint, to arrive at desired position every t_wps[i]
                 pos_waypoint_interp()
-                yaw_follow()
             case i if 3 <= i <= 11: # Calculate a minimum velocity, acceleration, jerk or snap trajectory
                 pos_waypoint_min()
-                yaw_follow()
             case 12: # Go to next waypoint when arrived at waypoint
                 pos_waypoint_arrived()
-                yaw_follow()
             case 13: # Go to next waypoint when arrived at waypoint after waiting x seconds
                 pos_waypoint_arrived_wait()  
-                yaw_follow()
+        yaw_follow()
             
 
 def get_poly_cc(n, k, t):
@@ -448,43 +412,3 @@ def minSomethingTraj_faststop(waypoints, times, order):
 
     # solve for the coefficients
     return np.linalg.solve(A, B)
-
-
-
-## Testing scripts
-def testXYZposition(t):
-    desPos = np.array([0., 0., 0.])
-    desVel = np.array([0., 0., 0.])
-    desAcc = np.array([0., 0., 0.])
-    desThr = np.array([0., 0., 0.])
-    desEul = np.array([0., 0., 0.])
-    desPQR = np.array([0., 0., 0.])
-    desYawRate = 30.0*np.pi/180
-    
-    if t >= 1 and t < 4:
-        desPos = np.array([2, 2, 1])
-    elif t >= 4:
-        desPos = np.array([2, -2, -2])
-        desEul = np.array([0, 0, np.pi/3])
-    
-    sDes = np.hstack((desPos, desVel, desAcc, desThr, desEul, desPQR, desYawRate)).astype(float)
-
-    return sDes
-
-def testVelControl(t):
-    desPos = np.array([0., 0., 0.])
-    desVel = np.array([0., 0., 0.])
-    desAcc = np.array([0., 0., 0.])
-    desThr = np.array([0., 0., 0.])
-    desEul = np.array([0., 0., 0.])
-    desPQR = np.array([0., 0., 0.])
-    desYawRate = 0.
-
-    if t >= 1 and t < 4:
-        desVel = np.array([3, 2, 0])
-    elif t >= 4:
-        desVel = np.array([3, -1, 0])
-     
-    sDes = np.hstack((desPos, desVel, desAcc, desThr, desEul, desPQR, desYawRate)).astype(float)
-    
-    return sDes

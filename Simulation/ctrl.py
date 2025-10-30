@@ -73,7 +73,7 @@ class Control:
         self.quad = quad
         self.traj = traj
         self.sDesCalc = np.zeros(16)
-        self.motor_cmd = np.ones(4) * self.quad.params["omega_hover"]
+        self.motor_cmd = np.full(4, self.quad.params["omega_hover"])
         self.thr_int = np.zeros(3)
         
         # Calculate weight of the Yaw control gain
@@ -86,7 +86,6 @@ class Control:
         self.acc_sp = np.zeros(3)
         self.thrust_sp = np.zeros(3)
         self.eul_sp = np.zeros(3)
-        self.pqr_sp = np.zeros(3)
         self.yawFF = np.zeros(3)
 
     def controller(self, Ts):
@@ -96,10 +95,8 @@ class Control:
         self.pos_sp = sDes[0:3]
         self.vel_sp = sDes[3:6]
         self.acc_sp = sDes[6:9]
-        self.thrust_sp = sDes[9:12]
-        self.eul_sp = sDes[12:15]
-        self.pqr_sp = sDes[15:18]
-        self.yawFF = sDes[18]
+        self.eul_sp = sDes[9:12]
+        self.yawFF = sDes[12]
         
         # Select Controller
         # ---------------------------
@@ -121,20 +118,16 @@ class Control:
         self.sDesCalc[0:3] = self.pos_sp
         self.sDesCalc[3:6] = self.vel_sp
         self.sDesCalc[6:9] = self.thrust_sp
-        self.sDesCalc[9:13] = self.qd
+        self.sDesCalc[9:13] = self.qd.q
         self.sDesCalc[13:16] = self.rate_sp
 
     def z_pos_control(self):
-        # Z Position Control
-        # --------------------------- 
         pos_z_error = self.pos_sp[2] - self.quad.pos[2]
         self.vel_sp[2] += self.Pz * pos_z_error
         
     def xy_pos_control(self):
-        # XY Position Control
-        # --------------------------- 
-        pos_xy_error = self.pos_sp[0:2] - self.quad.pos[0:2]
-        self.vel_sp[0:2] += self.pos_P_gain * pos_xy_error
+        pos_xy_error = self.pos_sp[:2] - self.quad.pos[:2]
+        self.vel_sp[:2] += self.pos_P_gain * pos_xy_error
         
     def saturateVel(self):
         # Saturate Velocity Setpoint
@@ -162,61 +155,48 @@ class Control:
 
         # Apply Anti-Windup in D-direction
         stop_int_D = (thrust_z_sp >= uMax and vel_z_error >= 0.0) or (thrust_z_sp <= uMin and vel_z_error <= 0.0)
-
-        # Calculate integral part
-        if not stop_int_D:
+        if not stop_int_D: # Calculate integral part
             self.thr_int[2] += self.Izdot * vel_z_error * Ts * self.quad.params["has_intergral_ctrl"]
-            # Limit thrust integral
-            self.thr_int[2] = min(abs(self.thr_int[2]), self.quad.params["maxThr"]) * np.sign(self.thr_int[2])
-
         # Saturate thrust setpoint in D-direction
         self.thrust_sp[2] = np.clip(thrust_z_sp, uMin, uMax)
     
     def xy_vel_control(self, Ts):
         # XYZ Velocity Control (Thrust in NE-direction)
         # ---------------------------
-        vel_xy_error = self.vel_sp[0:2] - self.quad.vel[0:2]
-        thrust_xy_sp = self.vel_P_gain * vel_xy_error - self.vel_D_gain * self.quad.vel_dot[0:2] + self.quad.params["m"] * self.acc_sp[0:2] + self.thr_int[0:2]
+        vel_xy_error = self.vel_sp[:2] - self.quad.vel[:2]
+        thrust_xy_sp = self.vel_P_gain * vel_xy_error - self.vel_D_gain * self.quad.vel_dot[:2] + self.quad.params["m"] * self.acc_sp[:2] + self.thr_int[:2]
 
         # Max allowed thrust in NE based on tilt and excess thrust
         thrust_max_xy_tilt = abs(self.thrust_sp[2]) * np.tan(self.tiltMax)
-        thrust_max_xy = np.sqrt(self.quad.params["maxThr"]**2 - self.thrust_sp[2]**2)
+        thrust_max_xy = norm(self.quad.params["maxThr"] - self.thrust_sp[2])
         thrust_max_xy = min(thrust_max_xy, thrust_max_xy_tilt)
 
         # Saturate thrust in NE-direction
-        self.thrust_sp[0:2] = thrust_xy_sp
-        if self.thrust_sp[0:2].T @ self.thrust_sp[0:2] > thrust_max_xy**2:
-            mag = norm(self.thrust_sp[0:2])
-            self.thrust_sp[0:2] = thrust_xy_sp / mag * thrust_max_xy
+        self.thrust_sp[:2] = thrust_xy_sp
+        if self.thrust_sp[:2].T @ self.thrust_sp[:2] > thrust_max_xy**2:
+            mag = norm(self.thrust_sp[:2])
+            self.thrust_sp[:2] = thrust_xy_sp / mag * thrust_max_xy
         
         # Use tracking Anti-Windup for NE-direction: during saturation, the integrator is used to unsaturate the output
         # see Anti-Reset Windup for PID controllers, L.Rundqwist, 1990
         arw_gain = 2.0 / self.vel_P_gain
-        vel_err_lim = vel_xy_error - (thrust_xy_sp - self.thrust_sp[0:2]) * arw_gain
-        self.thr_int[0:2] += self.vel_I_gain * vel_err_lim * Ts * self.quad.params["has_intergral_ctrl"]
+        vel_err_lim = vel_xy_error - (thrust_xy_sp - self.thrust_sp[:2]) * arw_gain
+        self.thr_int[:2] += self.vel_I_gain * vel_err_lim * Ts * self.quad.params["has_intergral_ctrl"]
     
     def thrustToAttitude(self):
         # Create Full Desired Quaternion Based on Thrust Setpoint and Desired Yaw Angle
         # ---------------------------
         yaw_sp = self.eul_sp[2]
-
-        # Desired body_z axis direction
-        body_z = -utils.vectNormalize(self.thrust_sp)
-        
         # Vector of desired Yaw direction in XY plane, rotated by pi/2 (fake body_y axis)
         y_C = np.array([
             -np.sin(yaw_sp), 
             np.cos(yaw_sp), 
             0.0
         ])
-        
-        # Desired body_x axis direction
-        body_x = np.cross(y_C, body_z)
-        body_x = utils.vectNormalize(body_x)
-        
-        # Desired body_y axis direction
-        body_y = np.cross(body_z, body_x)
 
+        body_z = -utils.unit_vector(self.thrust_sp) # Desired body_z axis direction
+        body_x = utils.unit_vector(np.cross(y_C, body_z)) # Desired body_x axis direction
+        body_y = utils.unit_vector(np.cross(body_z, body_x)) # Desired body_y axis direction
         # Desired rotation matrix
         R_sp = np.array([
             body_x, 
@@ -225,45 +205,49 @@ class Control:
         ]).T
 
         # Full desired quaternion (full because it considers the desired Yaw angle)
-        self.qd_full = utils.RotToQuat(R_sp)
+        self.qd_full = utils.Quat().from_R(R_sp)
         
     def attitude_control(self):
         # Current thrust orientation e_z and desired thrust orientation e_z_d
-        e_z = self.quad.R[:, 2]
-        e_z_d = -utils.vectNormalize(self.thrust_sp)
+        e_z = self.quad.quat.R[:, 2]
+        e_z_d = -utils.unit_vector(self.thrust_sp)
 
         # Quaternion error between the 2 vectors
-        qe_red = np.zeros(4)
-        qe_red[0] = e_z @ e_z_d + norm(e_z) * norm(e_z_d)
-        qe_red[1:4] = np.cross(e_z, e_z_d)
-        qe_red = utils.vectNormalize(qe_red)
+        qe_red_temp = np.zeros(4)
+        qe_red_temp[0] = e_z @ e_z_d + norm(e_z) * norm(e_z_d)
+        qe_red_temp[1:] = np.cross(e_z, e_z_d)
+        qe_red = utils.Quat()
+        qe_red.q = qe_red_temp
+        qe_red.normalize()
         
         # Reduced desired quaternion (reduced because it doesn't consider the desired Yaw angle)
-        self.qd_red = utils.quatMultiply(qe_red, self.quad.quat)
+        self.qd_red = qe_red * self.quad.quat
 
         # Mixed desired quaternion (between reduced and full) and resulting desired quaternion qd
-        q_mix = utils.quatMultiply(utils.inverse(self.qd_red), self.qd_full)
+        q_mix = (self.qd_red.inverse * self.qd_full).q
         q_mix *= np.sign(q_mix[0])
         q_mix[0] = np.clip(q_mix[0], -1.0, 1.0)
         q_mix[3] = np.clip(q_mix[3], -1.0, 1.0)
-        self.qd = utils.quatMultiply(self.qd_red, np.array([
+        temp_quat = utils.Quat()
+        temp_quat.q = np.array([
             np.cos(self.yaw_w * np.arccos(q_mix[0])), 
             0, 
             0, 
             np.sin(self.yaw_w * np.arcsin(q_mix[3]))
-        ]))
+        ])
+        self.qd = self.qd_red * temp_quat
 
         # Resulting error quaternion
-        self.qe = utils.quatMultiply(utils.inverse(self.quad.quat), self.qd)
+        self.qe = self.quad.quat.inverse * self.qd
 
         # Create rate setpoint from quaternion error
-        self.rate_sp = 2.0 * np.sign(self.qe[0]) * self.qe[1:] * self.att_P_gain
+        self.rate_sp = 2.0 * np.sign(self.qe.w) * self.qe.v * self.att_P_gain
         
         # Limit yawFF
         self.yawFF = np.clip(self.yawFF, -self.rMax, self.rMax)
 
         # Add Yaw rate feed-forward
-        self.rate_sp += utils.quat2R(utils.inverse(self.quad.quat))[:, 2] * self.yawFF
+        self.rate_sp += self.quad.quat.inverse.R[:, 2] * self.yawFF
         self.rate_sp = np.clip(self.rate_sp, -self.rateMax, self.rateMax)
 
     def rate_control(self):

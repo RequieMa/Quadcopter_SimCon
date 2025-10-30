@@ -9,9 +9,8 @@ Please feel free to use and modify this, but keep the above information. Thanks!
 import numpy as np
 from numpy.linalg import norm
 
-# Normalize quaternion, or any vector
-def vectNormalize(q):
-    return q / norm(q)
+def unit_vector(v):
+    return v / norm(v)
 
 # Quaternion multiplication
 def quatMultiply(q, p):
